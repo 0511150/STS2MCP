@@ -43,18 +43,18 @@
 
 ### Waiting for the Game to Settle (`wait?`)
 
-`combat_play_card`, `combat_end_turn`, `use_potion` and `proceed_to_map` accept `wait=True`. The mod
+`combat_play_card`, `combat_end_turn`, `use_potion` and `proceed_to_map` default to `wait=True`. The mod
 then holds the HTTP response until the game has settled — animations, card resolution and the redraw
 finished — and returns the settled state with it, replacing the usual "act, then poll
 `get_game_state` until `is_resolving` is false" loop with a single call.
 
 The reply gains `settled`, `changed`, `waited_ms`, `polls` and `state` (the same payload
-`get_game_state(format="json")` would return). `changed: false` means the action moved nothing
-observable; `settled: false` means the wait timed out and the state may still be mid-resolution.
+`get_game_state(format="compact")` now returns through the bridge (raw HTTP remains full JSON)). `changed: false` means the mod's coarse fingerprint did not detect a change
+(relic/power changes can be missed, so inspect the returned state); `settled: false` means the wait timed out and the state may still be mid-resolution.
 
-These are the hot paths, so only they expose it as a tool parameter; every other singleplayer action
-still accepts `"wait": true` (plus `wait_timeout_ms` and `include_state`) over raw HTTP. Multiplayer
-ignores it.
+These hot paths expose `wait` as a tool parameter. Other singleplayer action tools
+also wait internally by default. Raw HTTP accepts `"wait": true`, `wait_timeout_ms`
+and `include_state`. Multiplayer behavior is unchanged.
 
 ### Profile Tools
 
@@ -101,3 +101,54 @@ All multiplayer tools are prefixed with `mp_`. They route through `/api/v1/multi
 | `mp_crystal_sphere_set_tool(tool)` | Crystal Sphere | Switch the active divination tool |
 | `mp_crystal_sphere_click_cell(x, y)` | Crystal Sphere | Click a hidden cell in the grid |
 | `mp_crystal_sphere_proceed()` | Crystal Sphere | Continue after the minigame finishes |
+
+
+### Compact singleplayer responses
+
+`get_game_state()` now defaults to `format="compact"`. Explicit `format="json"`
+and `format="markdown"` retain the original HTTP representations. Singleplayer
+actions default to waiting and return the same compact representation in `state`.
+Use this returned state directly when `settled` is true. `wait=False` remains
+available on the hot-path tools. Other singleplayer actions also wait internally.
+Multiplayer behavior is unchanged.
+
+Compact responses are self-contained (no session cache): keyword definitions are
+sent once per response and referenced by `keyword_refs`; duplicate deck cards
+are grouped with `count`, `uids` and/or `indices`. Piles list only UIDs with
+`pile_details_omitted: true`; query their details for pile-dependent decisions. All dynamic descriptions, target
+previews, effects, counters, hand selectors and screen options remain available.
+Full map `nodes` are omitted with `nodes_omitted: true`; current position, next
+options, lookahead, marks and boss information remain. Retrieve the route graph
+with `get_state_details("map")` before choosing a long-term path.
+
+`get_state_details(section)` fetches a single full current section (deck,
+draw_pile, discard_pile, exhaust_pile, relics, potions, hand, status, player, map).
+It reports screen/run and whether the section exists; it is a fresh observation,
+not the historical state returned by an earlier action.
+
+An action timeout is NOT permission to retry it. Observe the state first.
+The bridge ignores proxy environment variables by default for the local game
+API; opt in with `--trust-env` if required. `--no-trust-env` remains supported.
+Restart the MCP process/client connection after upgrading the Python files.
+No DLL rebuild or game restart is required for this bridge-only change.
+
+Newer FastMCP versions automatically duplicated string results into both text
+and `structuredContent.result`. Tool registration now explicitly requests text
+output only when supported by the SDK. The JSON text stays the same; each result
+is transmitted once. Older SDKs keep their existing text-only behavior.
+
+The draw pile API is display-sorted by rarity and ID, not actual draw order.
+Compact state now reports `draw_pile_order: "display_sorted_not_draw_order"`;
+`get_state_details("draw_pile")` carries the same warning as `order`.
+
+### Navigation settlement safeguard
+
+Live new-run testing found that the mod can return the old game-over/character
+screen with `settled=true` before a click-triggered transition begins. For menu
+navigation, map travel, rewards and other navigation actions, the bridge now
+reads a pre-action snapshot. If the accepted response is still that old state,
+it performs bounded, read-only polling internally until a changed state is ready
+and identical across three observations. No mutation is ever retried. Failure to
+confirm within five seconds returns `settled=false` plus an observation warning;
+the action remains accepted. Ordinary combat cards incur no extra pre-read.
+These hidden HTTP reads do not expose repeated full states to the model.
