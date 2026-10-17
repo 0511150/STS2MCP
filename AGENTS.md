@@ -2,14 +2,27 @@
 
 ## MCP Tool Calling Tips
 
-### State Polling
-- After `combat_end_turn`, the state may show `is_play_phase: false` or `turn: enemy`. Call `get_game_state` again to advance to the next player turn.
-- Sometimes you need to call `get_game_state` twice — once to see enemy turn results, once to see your new hand.
-- Use `format: "json"` during combat for structured data; `format: "markdown"` for map/event overview.
+### State Reads and Settled Actions
+- Singleplayer `get_game_state()` defaults to compact JSON. Original full JSON and Markdown remain available via `format`.
+- Singleplayer actions wait for settlement by default and return compact `state`. If `settled: true` and state is present, decide from it directly. Do not immediately call GET again.
+- Menu/map/reward navigation now confirms a changed stable state internally if the mod returned the old screen. `transition_checked` / `transition_polls` identify this recovery. An observation failure after acceptance keeps status=ok but sets settled=false with a warning; do not repeat the mutation blindly.
+- `changed` uses a coarse mod fingerprint: false can still accompany a real relic/power change. Inspect the returned effect/state; do not repeat an accepted mutation merely because changed=false.
+- GET only observes the running game; it does not advance a turn. If `settled: false`, read again when necessary. After a transport timeout, observe before acting; never blindly retry a mutation.
+- `keyword_refs` resolve through `keyword_definitions` in the SAME response; no cross-call cache is needed.
+- Piles list only card UIDs (membership); `pile_details_omitted: true` means descriptions/costs must be read with get_state_details when needed (e.g. draw, retrieval or pile-dependent decisions). Deck duplicates are grouped by their complete current properties, with `count`, `uids` and/or `indices`. Hand cards and selection options are never grouped.
+- The draw pile is sorted for display by rarity/ID, NOT in draw order. Never infer the next draw from its position in either compact or full/detail responses. Known top-deck effects may be tracked from their actual resolution.
+- Use `get_state_details(section="map")` for the full route graph when planning a path. Other detail sections include deck, draw_pile, discard_pile, exhaust_pile, relics, potions, hand, status and player.
+- Compact preserves dynamic descriptions, target previews, status effects, relic counters, potion effects and screen options. Do not infer that a missing optional field means its value became zero.
 
-### Card Index Shifting
-- **CRITICAL**: Playing a card removes it from hand and shifts all indices. Play cards from RIGHT to LEFT (highest index first) to keep lower indices stable, or re-check state between plays.
-- When targeting, always provide `target` for single-target cards. Entity IDs are UPPER_SNAKE_CASE with a `_0` suffix (e.g. `KIN_PRIEST_0`).
+### Stable Card Selection
+- Prefer `combat_play_card(card_uid=..., target=...)`. UID stays stable within the combat, unlike hand positions.
+- When using indices, take them from the latest returned state: a played card shifts later indices.
+- Single-target cards need a target unless exactly one enemy is alive. Use the advertised entity_id or combat_id and check alive status.
+
+### Selection Screen Routing
+- `state_type: card_select` uses `deck_select_card` / `deck_confirm_selection`, even when opened by a combat card.
+- `state_type: hand_select` uses `combat_select_card` / `combat_confirm_selection`.
+- Use the returned screen type and its advertised options rather than guessing from the preceding action.
 
 ### Event & Reward Flow
 - Events: `event_choose_option`. After choosing, there's often a "Proceed" option at index 0.
@@ -46,7 +59,7 @@
 
 ### Boss Fights
 - **Kill the leader, not the minions.** Enemies with "Minion" power flee when their leader dies.
-- Use potions aggressively in boss fights — they don't carry between acts.
+- Use potions to survive difficult fights; unused potions can carry between acts.
 - Boss fights are wars of attrition. The longer they go, the more enemies scale with Strength buffs.
 
 ### Potion Usage
@@ -56,6 +69,6 @@
 
 ### Common Mistakes
 - Blocking when enemies are sleeping/buffing — waste of energy.
-- Not checking card indices after playing — indices shift left.
+- Reusing stale card indices — prefer card_uid or the latest returned state.
 - Taking too long to kill bosses — enemies scale every turn.
 - Adding mediocre cards that dilute the deck before boss fights.
